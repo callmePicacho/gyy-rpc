@@ -24,7 +24,7 @@ func NewGobCodec(conn io.ReadWriteCloser) Codec {
 		conn: conn,
 		buf:  buf,
 		dec:  gob.NewDecoder(conn),
-		enc:  gob.NewEncoder(conn),
+		enc:  gob.NewEncoder(buf), // 优化写入效率，先写入 buf，借助 Flush 将 buf 的内容写入 conn
 	}
 }
 

@@ -54,13 +54,15 @@ func (s *Server) ServeConn(conn io.ReadWriteCloser) {
 		log.Printf("rpc server: invalid codec type %s", opt.CodecType)
 		return
 	}
-	// 根据 opt 中获取的编码类型，调用合适的构造函数初始化获取实例
+	// 根据 opt 中获取的编码类型，调用合适的构造函数初始化获取实例送入 serveCodec
 	s.serveCodec(f(conn))
 }
 
 // invalidRequest 发生错误时，作为 argv 占位符
 var invalidRequest = struct{}{}
 
+// serveCodec
+// 循环做："读取请求 -> 处理请求 -> 回复处理"，直到
 func (s *Server) serveCodec(cc codec.Codec) {
 	sending := sync.Mutex{}
 	wg := sync.WaitGroup{}
