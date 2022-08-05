@@ -2,7 +2,7 @@ package codec
 
 import "io"
 
-// Head 请求头
+// Header 请求头
 type Header struct {
 	ServiceMethod string // 服务名和方法名，格式为："服务名.方法名"
 	Seq           uint64 // 请求的序号，用来区分不同的请求

@@ -34,6 +34,9 @@ func NewServer() *Server {
 
 var DefaultServer = NewServer()
 
+// ServeConn
+// 1. 解析并验证 option 信息，获取请求的编解码器类型
+// 2. 解析请求其余部分 header | body | header | body ...
 func (s *Server) ServeConn(conn io.ReadWriteCloser) {
 	defer func() {
 		conn.Close()
@@ -68,6 +71,7 @@ func (s *Server) serveCodec(cc codec.Codec) {
 	wg := sync.WaitGroup{}
 	// 报文格式是 option | head1 | body1 | head2 | body2 | .. 所以不断循环读取 head 和 body
 	for {
+		// 读取一次请求中的 header 和 body
 		req, err := s.readRequest(cc)
 		if err != nil {
 			// 可能读取 header 的时候就出问题了，此时 req 还未初始化
@@ -122,6 +126,8 @@ func (s *Server) readRequest(cc codec.Codec) (*request, error) {
 	return req, nil
 }
 
+// sendResponse
+// 回复客户端信息
 func (s *Server) sendResponse(cc codec.Codec, h *codec.Header, body interface{}, sending *sync.Mutex) {
 	sending.Lock()
 	defer sending.Unlock()
@@ -140,6 +146,7 @@ func (s *Server) handleRequest(cc codec.Codec, req *request, sending *sync.Mutex
 }
 
 func (s *Server) Accept(list net.Listener) {
+	// 循环：接收请求，执行操作的过程
 	for {
 		conn, err := list.Accept()
 		if err != nil {
@@ -151,5 +158,6 @@ func (s *Server) Accept(list net.Listener) {
 }
 
 func Accept(list net.Listener) {
+	// 使用默认 server 对象，方便用户调用
 	DefaultServer.Accept(list)
 }

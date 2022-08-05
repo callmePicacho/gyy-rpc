@@ -1,12 +1,12 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"gyyrpc"
-	"gyyrpc/codec"
 	"log"
 	"net"
+	"net/rpc"
+	"sync"
 	"time"
 )
 
@@ -17,6 +17,7 @@ func startServer(addr chan string) {
 	}
 	log.Println("start rpc server on", l.Addr().String())
 	addr <- l.Addr().String()
+	// 接收客户端请求
 	gyyrpc.Accept(l)
 }
 
@@ -27,23 +28,28 @@ func main() {
 	// 启动服务器
 	go startServer(addr)
 
-	conn, _ := net.Dial("tcp", <-addr)
+	// 建立客户端请求
+	client, _ := gyyrpc.Dial("tcp", <-addr)
 	defer func() {
-		conn.Close()
+		_ = client.Close()
 	}()
 
 	time.Sleep(time.Second)
-	_ = json.NewEncoder(conn).Encode(gyyrpc.DefaultOption)
-	cc := codec.NewGobCodec(conn)
+	var wg sync.WaitGroup
 	for i := 0; i < 5; i++ {
-		h := &codec.Header{
-			ServiceMethod: "foo.sum",
-			Seq:           uint64(i),
-		}
-		cc.Write(h, fmt.Sprintf("gyyrpc req %d", h.Seq))
-		cc.ReadHeader(h)
-		var reply string
-		cc.ReadBody(&reply)
-		log.Println("reply:", reply)
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			args := fmt.Sprintf("gyyrpc req %d", i)
+			var reply string
+			// 客户端 RPC 调用
+			if err := client.Call("Foo.sum", args, &reply); err != nil {
+				log.Fatal("call Foo.sum error:", err)
+			}
+			log.Println("reply:", reply)
+		}(i)
 	}
+	wg.Wait()
+
+	rpc.HandleHTTP()
 }

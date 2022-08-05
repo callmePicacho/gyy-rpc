@@ -1,2 +1,2 @@
 # gyy-rpc
-RPC 框架玩具
+mini-RPC 框架
