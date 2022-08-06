@@ -3,6 +3,7 @@ package gyyrpc
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"gyyrpc/codec"
 	"io"
 	"log"
@@ -10,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"time"
 )
 
 // rpc 报文格式为：| Option | Header1 | Body1 | Header2 | Body2 | ...
@@ -17,13 +19,16 @@ import (
 const MagicNumber = 0x3bef5c
 
 type Option struct {
-	MagicNumber int        // 标记 gyyRPC 请求
-	CodecType   codec.Type // 编码类型
+	MagicNumber    int           // 标记 gyyRPC 请求
+	CodecType      codec.Type    // 编码类型
+	ConnectTimeout time.Duration // 连接超时时间
+	HandlerTimeout time.Duration // 处理超时时间
 }
 
 var DefaultOption = &Option{
-	MagicNumber: MagicNumber,
-	CodecType:   codec.GobType,
+	MagicNumber:    MagicNumber,
+	CodecType:      codec.GobType,
+	ConnectTimeout: time.Second * 10, // 默认 10s
 }
 
 // Server RPC 服务器
@@ -61,7 +66,7 @@ func (server *Server) ServeConn(conn io.ReadWriteCloser) {
 		return
 	}
 	// 根据 opt 中获取的编码类型，调用合适的构造函数初始化获取实例送入 serveCodec
-	server.serveCodec(f(conn))
+	server.serveCodec(f(conn), &opt)
 }
 
 // invalidRequest 发生错误时，作为 argv 占位符
@@ -69,7 +74,7 @@ var invalidRequest = struct{}{}
 
 // serveCodec
 // 循环做："读取请求 -> 处理请求 -> 回复处理"，直到
-func (server *Server) serveCodec(cc codec.Codec) {
+func (server *Server) serveCodec(cc codec.Codec, opt *Option) {
 	sending := sync.Mutex{}
 	wg := sync.WaitGroup{}
 	// 报文格式是 option | head1 | body1 | head2 | body2 | .. 所以不断循环读取 head 和 body
@@ -88,7 +93,7 @@ func (server *Server) serveCodec(cc codec.Codec) {
 		}
 		wg.Add(1)
 		// 根据 request 传入的信息做实际处理
-		go server.handleRequest(cc, req, &sending, &wg)
+		go server.handleRequest(cc, req, &sending, &wg, opt.HandlerTimeout)
 	}
 	wg.Wait()
 	cc.Close()
@@ -154,16 +159,37 @@ func (server *Server) sendResponse(cc codec.Codec, h *codec.Header, body interfa
 	}
 }
 
-func (server *Server) handleRequest(cc codec.Codec, req *request, sending *sync.Mutex, wg *sync.WaitGroup) {
+func (server *Server) handleRequest(cc codec.Codec, req *request, sending *sync.Mutex, wg *sync.WaitGroup, timeout time.Duration) {
 	defer wg.Done()
-	// 调用注册的 rpc 方法获取返回值
-	err := req.svc.call(req.mtype, req.argv, req.replyv)
-	if err != nil {
-		req.h.Error = err.Error()
-		server.sendResponse(cc, req.h, invalidRequest, sending)
+	called := make(chan struct{}) // 控制调用
+	sent := make(chan struct{})   // 控制服务端发送
+	go func() {
+		// 调用注册的 rpc 方法获取返回值
+		err := req.svc.call(req.mtype, req.argv, req.replyv)
+		called <- struct{}{}
+		if err != nil {
+			req.h.Error = err.Error()
+			server.sendResponse(cc, req.h, invalidRequest, sending)
+			sent <- struct{}{}
+			return
+		}
+		server.sendResponse(cc, req.h, req.replyv.Interface(), sending)
+		sent <- struct{}{}
+	}()
+
+	// 超时时间为0，立即返回
+	if timeout == 0 {
+		<-called
+		<-sent
 		return
 	}
-	server.sendResponse(cc, req.h, req.replyv.Interface(), sending)
+	select {
+	case <-time.After(timeout):
+		req.h.Error = fmt.Sprintf("rpc server: request handle timeout: expect within %s", timeout)
+		server.sendResponse(cc, req.h, req.replyv.Interface(), sending)
+	case <-called:
+		<-sent
+	}
 }
 
 func (server *Server) Accept(list net.Listener) {

@@ -1,6 +1,7 @@
 package gyyrpc
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"time"
 )
 
 // Call 代表一次 RPC 请求
@@ -188,9 +190,16 @@ func (client *Client) Go(serviceMethod string, args, reply interface{}, done cha
 	return call
 }
 
-// Call 暴露给用户的"同步" RPC 服务接口
-func (client *Client) Call(serviceMethod string, args, reply interface{}) error {
-	call := <-client.Go(serviceMethod, args, reply, make(chan *Call, 1)).Done
+// Call 暴露给用户的"超时同步" RPC 服务接口
+func (client *Client) Call(ctx context.Context, serviceMethod string, args, reply interface{}) error {
+	call := client.Go(serviceMethod, args, reply, make(chan *Call, 1))
+	select {
+	case <-ctx.Done():
+		client.removeCall(call.Seq)
+		return errors.New("rpc client: call failed: " + ctx.Err().Error())
+	case call := <-call.Done:
+		return call.Error
+	}
 	return call.Error
 }
 
@@ -240,24 +249,48 @@ func parseOptions(opts ...*Option) (*Option, error) {
 	return opt, nil
 }
 
-// Dial 根据 network 和 addr 建立连接
-func Dial(network, addr string, opts ...*Option) (client *Client, err error) {
+type clientResult struct {
+	client *Client
+	err    error
+}
+
+type newClientFunc func(conn net.Conn, opt *Option) (client *Client, err error)
+
+// 连接超时
+func dialTimeout(f newClientFunc, network, addr string, opts ...*Option) (client *Client, err error) {
 	// 解析传入 opt 或是使用默认 opt
 	opt, err := parseOptions(opts...)
 	if err != nil {
 		return nil, err
 	}
-	// 建立连接
-	conn, err := net.Dial(network, addr)
+	// 超时时间内建立连接
+	conn, err := net.DialTimeout(network, addr, opt.ConnectTimeout)
 	if err != nil {
 		return nil, err
 	}
-
 	defer func() {
 		if client == nil {
 			_ = conn.Close()
 		}
 	}()
-	// 使用 conn 和 opt 初始化 client
-	return NewClient(conn, opt)
+	ch := make(chan clientResult)
+	go func() {
+		client, err := f(conn, opt)
+		ch <- clientResult{client: client, err: err}
+	}()
+	if opt.ConnectTimeout == 0 {
+		result := <-ch
+		return result.client, result.err
+	}
+	select {
+	case <-time.After(opt.ConnectTimeout):
+		return nil, fmt.Errorf("rpc client: connect timeout: expect within %s", opt.ConnectTimeout)
+	case result := <-ch:
+		return result.client, result.err
+	}
+}
+
+// Dial 根据 network 和 addr 建立连接
+func Dial(network, addr string, opts ...*Option) (client *Client, err error) {
+	return dialTimeout(NewClient, network, addr, opts...)
 }

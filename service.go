@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 )
 
+// 代表注册进服务的 RPC 方法
 type methodType struct {
 	method    reflect.Method // 方法本身
 	ArgType   reflect.Type   // 传入参数
