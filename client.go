@@ -1,6 +1,7 @@
 package gyyrpc
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,8 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -293,4 +296,37 @@ func dialTimeout(f newClientFunc, network, addr string, opts ...*Option) (client
 // Dial 根据 network 和 addr 建立连接
 func Dial(network, addr string, opts ...*Option) (client *Client, err error) {
 	return dialTimeout(NewClient, network, addr, opts...)
+}
+
+func NewHTTPClient(conn net.Conn, opt *Option) (*Client, error) {
+	_, _ = io.WriteString(conn, fmt.Sprintf("CONNECT %s HTTP/1.0\n\n", defaultRPCPath))
+
+	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: "CONNECT"})
+	if err == nil && resp.Status == connected {
+		return NewClient(conn, opt)
+	}
+	if err == nil {
+		err = errors.New("unexpected HTTP response: " + resp.Status)
+	}
+	return nil, err
+}
+
+func DialHTTP(network, addr string, opts ...*Option) (*Client, error) {
+	return dialTimeout(NewHTTPClient, network, addr, opts...)
+}
+
+// XDial 根据不同 rpcAddr 调用不同函数连接到 rpc 服务器
+// rpcAddr 格式为 protocol@addr，例如 http@10.0.0.1:9999, tcp@10.0.0.1:999
+func XDial(rpcAddr string, opts ...*Option) (*Client, error) {
+	parts := strings.Split(rpcAddr, "@")
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("rpc client err: wrong format '%s', expect protocol@addr", rpcAddr)
+	}
+	protocol, addr := parts[0], parts[1]
+	switch protocol {
+	case "http":
+		return DialHTTP("tcp", addr, opts...)
+	default:
+		return Dial(protocol, addr, opts...)
+	}
 }

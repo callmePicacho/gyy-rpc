@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"gyyrpc"
 	"log"
 	"net"
+	"net/http"
 	"sync"
 	"time"
 )
@@ -30,20 +32,15 @@ func startServer(addr chan string) {
 		log.Fatal("network error:", err)
 	}
 	log.Println("start rpc server on", l.Addr().String())
+	gyyrpc.HandleHTTP()
 	addr <- l.Addr().String()
 	// 接收客户端请求
-	gyyrpc.Accept(l)
+	_ = http.Serve(l, nil)
 }
 
-func main() {
-	// 设置时间打印格式
-	log.SetFlags(0)
-	addr := make(chan string)
-	// 启动服务器
-	go startServer(addr)
-
+func call(addr chan string) {
 	// 建立客户端请求
-	client, _ := gyyrpc.Dial("tcp", <-addr)
+	client, _ := gyyrpc.DialHTTP("tcp", <-addr)
 	defer func() {
 		_ = client.Close()
 	}()
@@ -57,11 +54,17 @@ func main() {
 			args := &Args{Num1: i, Num2: i * i}
 			var reply int
 			// 客户端 RPC 调用
-			if err := client.Call("Foo.Sum", args, &reply); err != nil {
+			if err := client.Call(context.Background(), "Foo.Sum", args, &reply); err != nil {
 				log.Fatal("call Foo.Sum error:", err)
 			}
 			log.Printf("%d + %d = %d", args.Num1, args.Num2, reply)
 		}(i)
 	}
 	wg.Wait()
+}
+
+func main() {
+	addr := make(chan string)
+	go call(addr)
+	startServer(addr)
 }
