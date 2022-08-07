@@ -63,6 +63,7 @@ func (client *Client) Close() error {
 func (client *Client) IsAvailable() bool {
 	client.mu.Lock()
 	defer client.mu.Unlock()
+
 	return !client.shutdown && !client.closing
 }
 
@@ -203,7 +204,6 @@ func (client *Client) Call(ctx context.Context, serviceMethod string, args, repl
 	case call := <-call.Done:
 		return call.Error
 	}
-	return call.Error
 }
 
 func NewClient(conn net.Conn, opt *Option) (*Client, error) {
