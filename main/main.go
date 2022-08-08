@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"gyyrpc"
+	"gyyrpc/registry"
 	"gyyrpc/xclient"
 	"log"
 	"net"
+	"net/http"
 	"sync"
 	"time"
 )
@@ -27,7 +29,15 @@ func (f Foo) Sleep(args Args, reply *int) error {
 	return nil
 }
 
-func startServer(addr chan string) {
+// startRegistry 启动注册中心
+func startRegistry(wg *sync.WaitGroup) {
+	l, _ := net.Listen("tcp", ":9999")
+	registry.HandleHTTP()
+	wg.Done()
+	_ = http.Serve(l, nil)
+}
+
+func startServer(registryAddr string, wg *sync.WaitGroup) {
 	var foo Foo
 	// 注册 Foo 的方法
 	l, err := net.Listen("tcp", ":0")
@@ -37,8 +47,10 @@ func startServer(addr chan string) {
 	server := gyyrpc.NewServer()
 	// 将 foo 中符合条件的 RPC 方法注册进 server
 	_ = server.Register(&foo)
+	// 定时向注册中心发送心跳
+	registry.Heartbeat(registryAddr, "tcp@"+l.Addr().String(), 0)
 	log.Println("start rpc server on", l.Addr().String())
-	addr <- l.Addr().String()
+	wg.Done()
 	// 接收客户端请求
 	server.Accept(l)
 }
@@ -59,9 +71,9 @@ func foo(xc *xclient.XClient, ctx context.Context, typ, serviceMethod string, ar
 	}
 }
 
-func call(addr1, addr2 string) {
+func call(registerAddr string) {
 	// 启动负载均衡实例
-	d := xclient.NewMultiServerDiscovery([]string{"tcp@" + addr1, "tcp@" + addr2})
+	d := xclient.NewGyyRegistryDiscovery(registerAddr, 0)
 	xc := xclient.NewXClient(d, xclient.RandomSelect, nil)
 	defer func() {
 		_ = xc.Close()
@@ -78,8 +90,8 @@ func call(addr1, addr2 string) {
 	wg.Wait()
 }
 
-func broadcast(addr1, addr2 string) {
-	d := xclient.NewMultiServerDiscovery([]string{"tcp@" + addr1, "tcp@" + addr2})
+func broadcast(registerAddr string) {
+	d := xclient.NewGyyRegistryDiscovery(registerAddr, 0)
 	xc := xclient.NewXClient(d, xclient.RandomSelect, nil)
 	defer func() {
 		_ = xc.Close()
@@ -99,15 +111,20 @@ func broadcast(addr1, addr2 string) {
 }
 
 func main() {
-	ch1 := make(chan string)
-	ch2 := make(chan string)
-	go startServer(ch1)
-	go startServer(ch2)
-
-	addr1 := <-ch1
-	addr2 := <-ch2
+	registryAddr := "http://localhost:9999/_gyyrpc_/registry"
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go startRegistry(&wg)
+	wg.Wait()
 
 	time.Sleep(time.Second)
-	call(addr1, addr2)
-	broadcast(addr1, addr2)
+	wg.Add(2)
+	go startServer(registryAddr, &wg)
+	go startServer(registryAddr, &wg)
+	wg.Wait()
+
+	time.Sleep(time.Second)
+	call(registryAddr)
+	broadcast(registryAddr)
+	time.Sleep(time.Minute * 10)
 }
